@@ -1,0 +1,44 @@
+name: Senate eFD scrape
+
+# Daily Senate PTR pull. Runs on GitHub Actions because the Senate eFD's
+# Akamai edge blocks datacenter IPs (our research VM gets 403); Actions
+# runners are not blocked. Commits clean JSON the research pipeline ingests
+# via raw.githubusercontent.com.
+
+on:
+  schedule:
+    # 12:00 UTC daily — fresh before the morning research report (~13:30 UTC)
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}  # manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Scrape Senate eFD PTRs (rolling 14-day window)
+        run: python scrape.py --out-dir data
+
+      - name: Commit snapshot
+        run: |
+          git config user.name "senate-efd-relay"
+          git config user.email "senate-efd-relay@users.noreply.github.com"
+          git add data/latest.json data/snapshots/
+          if git diff --cached --quiet; then
+            echo "no changes to commit"
+          else
+            git commit -m "Senate eFD snapshot $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
