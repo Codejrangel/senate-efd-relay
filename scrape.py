@@ -13,12 +13,16 @@ member are drawn here.
 
 Flow
 ----
-1. Polite session handshake: GET /search/home/, accept the per-session EULA
-   click-through, retain session cookies + CSRF token.
-2. POST /search/report/data/ (DataTables server-side protocol,
-   report_types=[11] = Periodic Transaction Reports), paginated.
-3. For each electronically-filed PTR UUID: GET /search/view/ptr/{uuid}/
-   and parse the structured transaction table.
+1. Session handshake: GET /search/home/, extract the Django
+   csrfmiddlewaretoken, POST prohibition_agreement=1 WITHOUT following the
+   redirect, and verify the sessionid cookie landed. The search API 403s
+   without it — this is the step that fails silently if skipped.
+2. POST /search/report/data/ with report_types="[11]" (literal string),
+   filer_types="[1]", submitted_*_date range, and the CSRF token; the
+   response is {"result": "ok", "data": [[positional columns]...]}.
+3. For each electronic PTR href: GET the report page (re-establishing the
+   session once if the agreement shell comes back) and parse the structured
+   transaction table. /paper/ hrefs are kept as paper:true coverage gaps.
 4. Write data/latest.json + data/snapshots/ptr_<timestamp>.json.
 
 Politeness
@@ -308,68 +312,84 @@ class EFDSession:
         return self._request("POST", url, **kw)
 
     def handshake(self):
+        """Establish an authenticated eFD session.
+
+        Mirrors the proven community flow: GET the agreement page, extract the
+        Django csrfmiddlewaretoken from the form HTML, POST the agreement
+        (prohibition_agreement=1) WITHOUT following the redirect so the
+        sessionid Set-Cookie can be verified. The search API 403s without a
+        sessionid — proceeding half-authenticated is the classic failure mode.
+        """
         r = self.get(BASE + HOME_PATH)
-        soup = BeautifulSoup(r.text, "html.parser")
-        self.csrf = self.s.cookies.get("csrftoken") or self.s.cookies.get("csrf")
-        form = None
-        for f in soup.find_all("form"):
-            text = f.get_text(" ", strip=True).lower()
-            action = (f.get("action") or "").lower()
-            if "agree" in text or "accept" in text or "agree" in action:
-                form = f
-                break
-        if form is None:
-            if self.csrf:
-                print("handshake: no agree form; session already holds CSRF — proceeding",
-                      flush=True)
-                return
-            raise EFDBlocked("handshake: no EULA agree form found (form markup changed)")
-        action = form.get("action") or HOME_PATH
-        agree_url = action if action.startswith("http") else BASE + action
-        payload = {}
-        for inp in form.find_all("input"):
-            name = inp.get("name")
-            if not name:
-                continue
-            itype = (inp.get("type") or "").lower()
-            if itype in ("submit", "button", "image") and "agree" not in (
-                    inp.get("value") or "").lower():
-                continue
-            payload[name] = inp.get("value", "")
-        if not any("agree" in str(v).lower() or "accept" in str(v).lower()
-                   for v in payload.values()):
-            payload.setdefault("agree", "I Agree")
-        headers = {}
-        if self.csrf:
-            headers["X-CSRFToken"] = self.csrf
-        self.post(agree_url, data=payload, headers=headers)
-        self.csrf = (self.s.cookies.get("csrftoken")
-                     or self.s.cookies.get("csrf") or self.csrf)
-        print(f"handshake: EULA accepted; csrf={'present' if self.csrf else 'absent'}",
-              flush=True)
+        m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', r.text)
+        if not m:
+            raise EFDBlocked(
+                "handshake: no csrfmiddlewaretoken in agreement form "
+                "(form markup changed)")
+        self.csrf = m.group(1)
+        self._throttle()
+        resp = self.s.post(
+            BASE + HOME_PATH,
+            data={"csrfmiddlewaretoken": self.csrf,
+                  "prohibition_agreement": "1"},
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Referer": BASE + HOME_PATH},
+            timeout=60, allow_redirects=False)
+        self.last_req = time.time()
+        self.request_count += 1
+        if looks_like_challenge(resp.status_code, resp.text or ""):
+            raise EFDBlocked(
+                f"handshake: agreement POST blocked (HTTP {resp.status_code})")
+        if "sessionid" not in self.s.cookies:
+            raise EFDBlocked(
+                "handshake: agreement POST set no sessionid cookie "
+                f"(status={resp.status_code}) — not authenticated")
+        print("handshake: EULA accepted; sessionid present", flush=True)
 
     def search_ptrs(self, from_date=None, to_date=None, start=0,
-                    length=DT_PAGE_LENGTH, draw=1):
+                    length=DT_PAGE_LENGTH):
+        """POST the PTR search; return the parsed JSON body.
+
+        Payload mirrors the proven community flow: report_types/filer_types as
+        literal bracket strings, submitted_*_date as MM/DD/YYYY HH:MM:SS, and
+        the csrfmiddlewaretoken in the body. Response is
+        {"result": "ok", "data": [[col0..colN], ...]} with positional columns:
+        0=first name, 1=last name, 3=report-link HTML, 4=filing date.
+        """
+        def mdy(d):
+            if not d:
+                return ""
+            y, mo, dd = d.split("-")
+            return f"{mo}/{dd}/{y} 00:00:00"
+
         payload = {
-            DT_FIELDS["draw"]: draw,
-            DT_FIELDS["start"]: start,
-            DT_FIELDS["length"]: length,
-            DT_FIELDS["report_types"]: [PTR_REPORT_TYPE],
+            "start": start,
+            "length": length,
+            "report_types": "[11]",   # Periodic Transaction Report (literal string)
+            "filer_types": "[1]",     # Senator
+            "submitted_start_date": mdy(from_date),
+            "submitted_end_date": mdy(to_date),
+            "candidate_state": "",
+            "senator_state": "",
+            "office_id": "",
+            "first_name": "",
+            "last_name": "",
+            "csrfmiddlewaretoken": self.csrf or "",
         }
-        if from_date:
-            payload[DT_FIELDS["from_date"]] = from_date
-        if to_date:
-            payload[DT_FIELDS["to_date"]] = to_date
         headers = {"X-Requested-With": "XMLHttpRequest",
+                   "X-CSRFToken": self.csrf or "",
+                   "Referer": BASE + "/search/",
                    "Accept": "application/json, */*;q=0.8"}
-        if self.csrf:
-            headers["X-CSRFToken"] = self.csrf
         r = self.post(BASE + DATA_PATH, data=payload, headers=headers)
         try:
-            return r.json()
+            body = r.json()
         except ValueError:
             raise EFDFetchError(
                 f"search response was not JSON (first 200 chars: {r.text[:200]!r})")
+        if body.get("result") != "ok" or not isinstance(body.get("data"), list):
+            raise EFDFetchError(
+                f"search result={body.get('result')!r} (expected 'ok')")
+        return body
 
 # ---------------------------------------------------------------- parsing
 
@@ -389,37 +409,29 @@ def extract_uuid(value):
     return m.group(0).upper() if m else None
 
 
-def parse_search_row(row):
-    if isinstance(row, list):
-        row = {f"col{i}": v for i, v in enumerate(row)}
-    flat = {str(k).lower(): v for k, v in (row or {}).items()}
-    blob = json.dumps(row, default=str)
-    uuid = None
-    for k in ("ptr_link", "link", "url", "view", "href", "uuid", "id"):
-        if k in flat:
-            uuid = extract_uuid(flat[k])
-            if uuid:
-                break
-    if uuid is None:
-        uuid = extract_uuid(blob)
+def parse_search_row(cols):
+    """Normalize one positional DataTables row (list) into a filing dict.
+
+    Columns: 0=first name, 1=last name, 3=report-link HTML, 4=filing date.
+    /paper/ hrefs are scanned filings (kept as paper:true, never skipped).
+    Returns None if no UUID can be found (logged by the caller).
+    """
+    if not isinstance(cols, (list, tuple)) or len(cols) < 5:
+        return None
+    first = (cols[0] or "").strip()
+    last = (cols[1] or "").strip()
+    href_m = re.search(r'href="([^"]+)"', cols[3] or "")
+    href = href_m.group(1) if href_m else ""
+    uuid = extract_uuid(href)
     if uuid is None:
         return None
-
-    def pick(*fragments):
-        for k, v in flat.items():
-            kl = k.replace("_", " ").replace("-", " ")
-            if all(f in kl for f in fragments) and v:
-                return str(v).strip()
-        return None
-
-    member = pick("filer", "name") or pick("senator") or pick("name")
-    office = pick("office")
-    report_type = pick("report", "type") or "Periodic Transaction Report"
-    filing_date = (pick("date", "received") or pick("filing", "date") or pick("filed"))
-    amended = bool(pick("amend")) or "amend" in blob.lower()
-    return {"uuid": uuid, "member_name": member, "office": office,
-            "report_type": report_type, "filing_date": filing_date,
-            "is_amendment": 1 if amended else 0}
+    member = re.sub(r"\s+", " ", f"{first} {last}".replace(",", " ")).strip() or None
+    return {"uuid": uuid, "member_name": member, "office": None,
+            "report_type": "Periodic Transaction Report",
+            "filing_date": (cols[4] or "").strip() or None,
+            "is_amendment": 0,
+            "is_paper": "/paper/" in href,
+            "href": href}
 
 
 def parse_filing_date(raw):
@@ -584,35 +596,52 @@ def normalize_row(t, header, uuid, detail_url, first_seen):
 
 
 def iter_ptr_filings(session, from_date=None, to_date=None, max_pages=0):
-    start, draw, pages, total = 0, 1, 0, None
+    """Yield parsed PTR filing dicts from the eFD search, paginated.
+
+    Also yields the search totals for coverage measurement. Stops cleanly
+    when a page returns no data rows.
+    """
+    start, pages, total, filtered = 0, 0, None, None
     while True:
-        resp = session.search_ptrs(from_date=from_date, to_date=to_date,
-                                   start=start, length=DT_PAGE_LENGTH, draw=draw)
-        data = resp.get("data") or []
-        records_total = resp.get("recordsTotal")
-        records_filtered = resp.get("recordsFiltered", records_total)
+        body = session.search_ptrs(from_date=from_date, to_date=to_date,
+                                   start=start, length=DT_PAGE_LENGTH)
+        data = body.get("data") or []
         if total is None:
-            total = records_total
-            print(f"search: recordsTotal={records_total} "
-                  f"recordsFiltered={records_filtered}", flush=True)
-        for row in data:
-            f = parse_search_row(row)
+            total = body.get("recordsTotal")
+            filtered = body.get("recordsFiltered", total)
+            print(f"search: recordsTotal={total} recordsFiltered={filtered}",
+                  flush=True)
+        for cols in data:
+            f = parse_search_row(cols)
             if f is None:
                 print("search: skipped a row with no parseable UUID", flush=True)
                 continue
             yield f
         pages += 1
         start += len(data)
-        draw += 1
-        target = records_filtered if records_filtered is not None else total
+        target = filtered if filtered is not None else total
         if not data or (target and start >= target):
             break
         if max_pages and pages >= max_pages:
             break
     yield {"__catalog__": True, "records_total": total,
-           "records_filtered": records_filtered, "pages": pages}
+           "records_filtered": filtered, "pages": pages}
 
 
+def get_detail_html(session, href):
+    """GET a report page; if the agreement shell comes back, re-establish the
+    session once and retry (mirrors the proven community flow)."""
+    for _ in range(2):
+        r = session.get(BASE + href)
+        html = r.text or ""
+        if 'id="agreement_form"' not in html.lower() and "<table" in html.lower():
+            return html
+        print("detail: agreement shell returned; re-establishing session",
+              flush=True)
+        time.sleep(MIN_INTERVAL)
+        session.handshake()
+        time.sleep(MIN_INTERVAL)
+    raise ValueError("detail page returned the agreement shell twice")
 def main():
     ap = argparse.ArgumentParser(description="Senate eFD PTR relay scraper (research-only).")
     ap.add_argument("--from-date", default="",
@@ -661,10 +690,21 @@ def main():
     stats = {"done": 0, "paper": 0, "failed": 0, "trades": 0}
     for i, f in enumerate(filings):
         uuid = f["uuid"]
-        detail_url = BASE + PTR_VIEW_PATH.format(uuid=uuid)
+        href = f.get("href") or PTR_VIEW_PATH.format(uuid=uuid)
+        detail_url = href if href.startswith("http") else BASE + href
+        entry = {"uuid": uuid, "member_name": f.get("member_name"),
+                 "office": f.get("office"), "filing_date": f.get("filing_date"),
+                 "is_amendment": f.get("is_amendment", 0), "paper": False,
+                 "detail_url": detail_url, "trades": []}
+        if f.get("is_paper"):
+            # Scanned filing: no structured table; kept as a coverage gap.
+            entry["paper"] = True
+            stats["paper"] += 1
+            out_filings.append(entry)
+            continue
         try:
-            r = session.get(detail_url)
-            parsed = parse_detail(r.text)
+            html = get_detail_html(session, href)
+            parsed = parse_detail(html)
         except EFDBlocked as e:
             print(f"ABORT mid-run at {uuid}: {e}", flush=True)
             return 2  # no snapshot written; previous good snapshot stands
@@ -676,11 +716,12 @@ def main():
         for k in ("member_name", "filing_date", "is_amendment"):
             if not header.get(k) and f.get(k):
                 header[k] = f[k]
-        entry = {"uuid": uuid, "member_name": header["member_name"],
-                 "office": header.get("office"), "filing_date": header["filing_date"],
-                 "is_amendment": header["is_amendment"], "paper": parsed["paper"],
-                 "detail_url": detail_url, "trades": []}
+        entry["member_name"] = header["member_name"]
+        entry["office"] = header.get("office")
+        entry["filing_date"] = header["filing_date"]
+        entry["is_amendment"] = header["is_amendment"]
         if parsed["paper"]:
+            entry["paper"] = True
             stats["paper"] += 1
         else:
             normed = [normalize_row(t, header, uuid, detail_url, first_seen)
