@@ -1,0 +1,80 @@
+{
+ "relay": "senate-efd-relay",
+ "run_at": "2026-10-16T13:31:28+00:00",
+ "from_date": "2026-10-02",
+ "to_date": null,
+ "search": {
+  "records_total": 1,
+  "records_filtered": 1,
+  "pages": 1
+ },
+ "stats": {
+  "done": 1,
+  "paper": 0,
+  "failed": 0,
+  "trades": 2
+ },
+ "filings": [
+  {
+   "uuid": "0541BE4F-4F96-4D84-8D6F-D349F218BB2A",
+   "member_name": "John Fetterman",
+   "office": null,
+   "filing_date": "10/07/2026",
+   "is_amendment": 0,
+   "paper": false,
+   "detail_url": "https://efdsearch.senate.gov/search/view/ptr/0541be4f-4f96-4d84-8d6f-d349f218bb2a/",
+   "trades": [
+    {
+     "member_name": "John Fetterman",
+     "chamber": "senate",
+     "trade_date": "2026-09-16",
+     "available_date": "2026-10-07",
+     "ticker": null,
+     "asset_name": "DELL INTL LLC/EMC CORP Rate/Coupon: 5.6% Matures: 2033-09-15",
+     "asset_type": "bond",
+     "transaction_type": "purchase",
+     "amount_low": 1001,
+     "amount_high": 15000,
+     "amount_midpoint": 8000.5,
+     "option_strike": null,
+     "option_expiry": null,
+     "option_type": null,
+     "filing_doc_id": "0541BE4F-4F96-4D84-8D6F-D349F218BB2A",
+     "filing_date": "2026-10-07",
+     "content_hash": "00c64eb5b7b7ab44f5a9699abdeaf9afb1cc7cbc37ed9ab53632992ab371d239",
+     "is_amendment": 0,
+     "first_seen_date": "2026-10-16",
+     "source": "senate",
+     "source_url": "https://efdsearch.senate.gov/search/view/ptr/0541be4f-4f96-4d84-8d6f-d349f218bb2a/",
+     "owner": "Child",
+     "comment": "--"
+    },
+    {
+     "member_name": "John Fetterman",
+     "chamber": "senate",
+     "trade_date": "2026-09-15",
+     "available_date": "2026-10-07",
+     "ticker": null,
+     "asset_name": "DELL INTL LLC/EMC CORP Rate/Coupon: 5.6% Matures: 2033-09-15",
+     "asset_type": "bond",
+     "transaction_type": "purchase",
+     "amount_low": 1001,
+     "amount_high": 15000,
+     "amount_midpoint": 8000.5,
+     "option_strike": null,
+     "option_expiry": null,
+     "option_type": null,
+     "filing_doc_id": "0541BE4F-4F96-4D84-8D6F-D349F218BB2A",
+     "filing_date": "2026-10-07",
+     "content_hash": "823a728c8cb2bfc1fb6ece8df7479e75d38334b610ff96ea347ea7f7edd851ca",
+     "is_amendment": 0,
+     "first_seen_date": "2026-10-16",
+     "source": "senate",
+     "source_url": "https://efdsearch.senate.gov/search/view/ptr/0541be4f-4f96-4d84-8d6f-d349f218bb2a/",
+     "owner": "Child",
+     "comment": "--"
+    }
+   ]
+  }
+ ]
+}
