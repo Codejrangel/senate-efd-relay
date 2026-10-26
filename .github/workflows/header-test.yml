@@ -1,0 +1,76 @@
+name: Senate eFD header-variant handshake test
+
+# Test only: tries the agreement POST once with browser-style headers
+# (X-CSRFToken + Origin) added to the relay's existing POST.
+# Handshake only: no search, no detail pages, no snapshot, no data write,
+# no commit, and it NEVER touches the scrape workflow or its schedule.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Header-variant handshake test (POST once, no search)
+        run: |
+          python3 - << 'PY'
+          import re
+          import requests
+          from bs4 import BeautifulSoup
+
+          BASE = "https://efdsearch.senate.gov"
+          UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+          s = requests.Session()
+          s.headers.update({
+              "User-Agent": UA,
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Referer": BASE + "/search/home/",
+          })
+          r = s.get(BASE + "/search/home/", timeout=60)
+          print(f"GET status: {r.status_code}")
+          if r.status_code in (403, 429):
+              print("GET blocked")
+              raise SystemExit(2)
+          m = re.search(r'name="csrfmiddlewaretoken"\s+value="([^"]+)"', r.text)
+          if not m:
+              print("handshake: no csrfmiddlewaretoken in agreement form")
+              raise SystemExit(2)
+          csrf = m.group(1)
+          print("csrf token present: True (value redacted)")
+          resp = s.post(
+              BASE + "/search/home/",
+              data={"csrfmiddlewaretoken": csrf, "prohibition_agreement": "1"},
+              headers={
+                  "Content-Type": "application/x-www-form-urlencoded",
+                  "Referer": BASE + "/search/home/",
+                  "Origin": BASE,
+                  "X-CSRFToken": csrf,
+                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              },
+              timeout=60, allow_redirects=False)
+          print(f"POST status: {resp.status_code}")
+          print(f"cookie names: {sorted(s.cookies.keys())}")
+          print(f"sessionid present: {'sessionid' in s.cookies}")
+          if resp.status_code in (403, 429):
+              print(f"header-variant: agreement POST blocked (HTTP {resp.status_code})")
+              raise SystemExit(2)
+          if "sessionid" not in s.cookies:
+              print(f"header-variant: agreement POST set no sessionid (status={resp.status_code})")
+              raise SystemExit(2)
+          print("header-variant handshake: OK")
+          PY
