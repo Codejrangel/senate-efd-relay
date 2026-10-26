@@ -1,0 +1,68 @@
+name: Senate eFD form diagnostic (GET only)
+
+# Diagnostic only: fetches the agreement page and logs the form structure.
+# It NEVER submits the agreement, NEVER posts, NEVER writes data, and
+# NEVER touches the scrape workflow or its schedule.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Dump agreement form (GET only, no submit)
+        run: |
+          python3 - << 'PY'
+          import requests
+          from bs4 import BeautifulSoup
+
+          BASE = "https://efdsearch.senate.gov"
+          UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+          s = requests.Session()
+          s.headers.update({
+              "User-Agent": UA,
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Referer": BASE + "/search/home/",
+          })
+          r = s.get(BASE + "/search/home/", timeout=60)
+          print(f"GET status: {r.status_code}")
+          print(f"content-length: {len(r.text)}")
+          print(f"cookie names: {sorted(s.cookies.keys())}")
+          soup = BeautifulSoup(r.text, "html.parser")
+          forms = soup.find_all("form")
+          print(f"forms: {len(forms)}")
+          for i, f in enumerate(forms):
+              print(f"form {i}: action={f.get('action')!r} method={f.get('method')!r} id={f.get('id')!r} class={f.get('class')!r}")
+              print(f"  form text start: {f.get_text(' ', strip=True)[:120]!r}")
+              for inp in f.find_all("input"):
+                  name = inp.get("name")
+                  typ = inp.get("type")
+                  val = inp.get("value", "")
+                  sensitive = bool(name) and any(k in name.lower() for k in ("csrf", "token", "session"))
+                  if sensitive:
+                      print(f"  input: name={name!r} type={typ!r} value_present={bool(val)} (redacted)")
+                  else:
+                      print(f"  input: name={name!r} type={typ!r} value={val!r} checked={inp.has_attr('checked')}")
+              for btn in f.find_all("button"):
+                  print(f"  button: name={btn.get('name')!r} type={btn.get('type')!r} text={btn.get_text(' ', strip=True)!r}")
+          markers = [m for m in ("_abck", "sensor_data", "akamai", "bot manager", "access denied", "please verify you are a human", "are you a robot") if m in r.text.lower()]
+          print(f"challenge markers in body: {markers}")
+          if r.status_code in (403, 429):
+              print("GET blocked")
+              raise SystemExit(2)
+          PY
